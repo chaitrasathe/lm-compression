@@ -22,50 +22,43 @@ class SequenceKVCompressor:
             all_local_windows.append(local_window)
         return tuple(all_local_windows)
 
-    def compress_kv_cache(self, past_key_values, retention_window_start, prefill=False):
-        next_retention_window_start = retention_window_start.copy()
+    def compress_kv_cache(self, past_key_values, prefill=False):
         new_past_key_values = []
         if past_key_values is None:
             return None, None
         for layer_idx in range(self.num_transformer_blocks):
             seq_len = past_key_values[layer_idx][0].size(self.kv_seq_dim_idx)
-            current_uncompressed_window_length = seq_len - retention_window_start[layer_idx]
-            if current_uncompressed_window_length > self.all_local_windows[layer_idx]:
+            if seq_len> self.all_local_windows[layer_idx]:
                 if prefill:
                     new_keys = self.compress_prefill(past_key_values[layer_idx][0],
-                                                     retention_window_start[layer_idx], layer_idx)
+                                                      layer_idx)
                     new_values = self.compress_prefill(past_key_values[layer_idx][1],
-                                                       retention_window_start[layer_idx], layer_idx)
+                                                       layer_idx)
                     new_past_key_values.append((new_keys, new_values))
                 else:
                     new_keys = self.compress_decode(past_key_values[layer_idx][0])
                     new_values = self.compress_decode(past_key_values[layer_idx][1])
                     new_past_key_values.append((new_keys, new_values))
-                next_retention_window_start[layer_idx] = new_keys.size(self.kv_seq_dim_idx)
             else:
                 new_past_key_values.append(past_key_values[layer_idx])
-        return tuple(new_past_key_values), next_retention_window_start
+        return tuple(new_past_key_values)
 
-    def compress_prefill(self, x, retention_window_start, layer_idx):
+    def compress_prefill(self, x, layer_idx):
         x_copy = x.clone()
-        seq_len = x_copy.size(self.kv_seq_dim_idx)
-        while seq_len - retention_window_start > self.all_local_windows[layer_idx]:
-            x_sink = self.slice2d(x_copy, 0, self.sink_tokens)
-            x_compress_chunk = self.slice2d(x_copy, self.sink_tokens,
-                                            retention_window_start + self.all_local_windows[layer_idx])
-            x_future = self.slice2d(x_copy, retention_window_start + self.all_local_windows[layer_idx], seq_len)
-            x_compressed = self.compress2d(x_compress_chunk, 0, x_compress_chunk.size(2))
-            x_copy = torch.cat((x_sink, x_compressed, x_future), dim=self.kv_seq_dim_idx)
-            retention_window_start = self.sink_tokens + x_compressed.size(self.kv_seq_dim_idx)
-            seq_len = x_copy.size(self.kv_seq_dim_idx)
+        x_compress_chunk = self.slice2d(x_copy, self.sink_tokens,seq_len - self.sink_end_tokens)
+        seq_len = x_compress_chunk.size(self.kv_seq_dim_idx)
+        while seq_len > self.all_local_windows[layer_idx]:
+            x_compressed = self.compress2d(x_compressed, 0,self.all_local_windows[layer_idx], x_compress_chunk.size(2))
+            seq_len = x_compressed.size(self.kv_seq_dim_idx)
         return x_copy
 
     def compress_decode(self, x):
         x_copy = x.clone()
         seq_len = x_copy.size(self.kv_seq_dim_idx)
         sink_cache = self.slice2d(x_copy, 0, self.sink_tokens)
-        compressed_cache = self.compress2d(x_copy, self.sink_tokens, seq_len)
-        complete_cache = torch.cat((sink_cache, compressed_cache), dim=self.kv_seq_dim_idx)
+        sink_end_cache = self.slice2d(x_copy, seq_len-self.sink_end_tokens, seq_len)
+        compressed_cache = self.compress2d(x_copy, self.sink_tokens, seq_len-self.sink_end_tokens)
+        complete_cache = torch.cat((sink_cache, compressed_cache,sink_end_cache), dim=self.kv_seq_dim_idx)
         return complete_cache
 
     @staticmethod
