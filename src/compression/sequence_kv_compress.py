@@ -7,6 +7,7 @@ class SequenceKVCompressor:
     def __init__(self, sink_tokens, pooling_type, initial_local_window, steepness_coefficient,
                  num_transformer_blocks, kv_seq_dim_idx=2):
         self.sink_tokens = sink_tokens
+        self.sink_end_tokens = 64
         self.pooling_type = pooling_type
         self.initial_local_window = initial_local_window
         self.steepness_coefficient = steepness_coefficient
